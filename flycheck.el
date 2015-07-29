@@ -3962,6 +3962,15 @@ of command checkers is `flycheck-sanitize-errors'.
      or as special symbol or form for
      `flycheck-substitute-argument', which see.
 
+`:standard-input BOOLEAN'
+     Whether or not to pass the buffer to COMMAND via standard input
+
+     When true, the current buffer's contents shall be sent
+     to the process via standard input.
+
+     This property is optional.  If omitted, it defaults to
+     false.
+
 `:error-patterns PATTERNS'
      A list of patterns to parse the output of the `:command'.
 
@@ -4024,7 +4033,8 @@ default `:verify' function of command checkers."
         (patterns (plist-get properties :error-patterns))
         (parser (or (plist-get properties :error-parser)
                     #'flycheck-parse-with-patterns))
-        (predicate (plist-get properties :predicate)))
+        (predicate (plist-get properties :predicate))
+        (standard-input (plist-get properties :standard-input)))
 
     (unless command
       (error "Missing :command in syntax checker %s" symbol))
@@ -4061,6 +4071,7 @@ default `:verify' function of command checkers."
                             patterns)))
       (pcase-dolist (`(,prop . ,value)
                      `((command . ,command)
+                       (standard-input . ,standard-input)
                        (error-parser . ,parser)
                        (error-patterns . ,patterns)))
         (setf (flycheck-checker-get symbol prop) value)))))
@@ -4077,6 +4088,10 @@ The executable variable is named `flycheck-CHECKER-executable'."
 (defun flycheck-checker-default-executable (checker)
   "Get the default executable of CHECKER."
   (car (flycheck-checker-get checker 'command)))
+
+(defun flycheck-checker-standard-input-p (checker)
+  "Get the standard input flag of CHECKER."
+  (flycheck-checker-get checker 'standard-input))
 
 (defun flycheck-checker-executable (checker)
   "Get the command executable of CHECKER.
@@ -4307,6 +4322,12 @@ symbols in the command."
           ;; example for such a conflict.
           (setq process (apply 'start-process (format "flycheck-%s" checker)
                                nil program args))
+          (when (and (flycheck-checker-standard-input-p checker)
+                     (process-live-p process))
+            (save-restriction
+              (widen)
+              (process-send-region process (point-min) (point-max))
+              (process-send-eof    process)))
           (setf (process-sentinel process) #'flycheck-handle-signal)
           (setf (process-filter process) #'flycheck-receive-checker-output)
           (set-process-query-on-exit-flag process nil)
@@ -4999,7 +5020,8 @@ SYMBOL with `flycheck-def-executable-var'."
         (parser (plist-get properties :error-parser))
         (filter (plist-get properties :error-filter))
         (predicate (plist-get properties :predicate))
-        (verify-fn (plist-get properties :verify)))
+        (verify-fn (plist-get properties :verify))
+        (standard-input (plist-get properties :standard-input)))
 
     `(progn
        (flycheck-def-executable-var ,symbol ,(car command))
@@ -5015,6 +5037,8 @@ SYMBOL with `flycheck-def-executable-var'."
          :modes ',(plist-get properties :modes)
          ,@(when predicate
              `(:predicate #',predicate))
+         ,@(when standard-input
+             `(:standard-input #',standard-input))
          :next-checkers ',(plist-get properties :next-checkers)
          ,@(when verify-fn
              `(:verify #',verify-fn))
@@ -6477,10 +6501,7 @@ See URL `https://github.com/eslint/eslint'."
   :command ("eslint" "--format=checkstyle"
             (config-file "--config" flycheck-eslintrc)
             (option "--rulesdir" flycheck-eslint-rulesdir)
-            ;; We need to use source-inplace because eslint looks for
-            ;; configuration files in the directory of the file being checked.
-            ;; See https://github.com/flycheck/flycheck/issues/447
-            source-inplace)
+            "--stdin" "--stdin-filename" source-original)
   :error-parser flycheck-parse-checkstyle
   :error-filter (lambda (errors)
                   (mapc (lambda (err)
@@ -6497,6 +6518,7 @@ See URL `https://github.com/eslint/eslint'."
                                  (flycheck-error-message err))))
                         (flycheck-sanitize-errors (flycheck-increment-error-columns errors)))
                   errors)
+  :standard-input t
   :modes (js-mode js2-mode js3-mode)
   :next-checkers ((warning . javascript-jscs)))
 
